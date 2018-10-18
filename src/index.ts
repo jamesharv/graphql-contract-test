@@ -2,40 +2,33 @@
 
 import {
     BreakingChange,
-    buildClientSchema,
     buildSchema,
     findBreakingChanges,
     GraphQLSchema,
-    introspectionQuery,
 } from "graphql"
-
-import fetch from "node-fetch"
 
 import * as chalk from "chalk"
 import * as fs from "fs"
 import * as minimist from "minimist"
+import * as glob from "glob-promise";
 
 import {transformChangeDescription} from "./utils/transformChangeDescription"
 import {transformChangeType} from "./utils/transformChangeType"
 
 import * as CliTable2 from "cli-table3"
 
-const name = "graphql-contract-test"
-const version = "0.0.10"
-
 const usage = `
   ${chalk.bold(
-    "Check if the remote server fulfills the supplied GraphQL contract file",
+    "Check if new_schema_file is backwards compatible with current_schema_file (ie. introduces no breaking changes)",
 )}
 
-  Usage: graphql-contract-test ENDPOINT_URL client_schema_file
+  Usage: graphql-contract-test current_schema_file new_schema_file
 
   Options:
-    --header, -h         Add a custom header (ex. 'Authorization=Bearer ...'), can be used multiple times
     --ignore-directives  Exclude directive changes from the comparison
 `
 
-const intro = `  GraphQL Contract Test v${version}
+const intro = `  GraphQL Contract Test
 `
 
 async function main(): Promise<void> {
@@ -48,14 +41,13 @@ async function main(): Promise<void> {
         process.exit(1)
     }
 
-    const endpoint = argv._[0]
-    const contractFile = argv._[1]
-    const headers = parseHeaderOptions(argv)
+    const newSchemaFile = argv._[0]
+    const currentSchemaFile = argv._[1]
 
-    const implementation = await getImplementedSchema(endpoint, headers)
-    const contract = getContractSchema(contractFile)
+    const currentSchema = await loadSchema(currentSchemaFile)
+    const newSchema = await loadSchema(newSchemaFile)
 
-    let breakingChanges = findBreakingChanges(contract, implementation)
+    let breakingChanges = findBreakingChanges(newSchema, currentSchema)
 
     if (argv["ignore-directives"]) {
         console.log("  ❗️  Ignoring directive differences")
@@ -63,7 +55,7 @@ async function main(): Promise<void> {
     }
 
     if (breakingChanges.length === 0) {
-        console.log(chalk.bold.green("  ✨  The server appears to implement the schema you provided"))
+        console.log(chalk.bold.green("  ✨  The new schema does not introduce any breaking changes"))
         process.exit(0)
     }
 
@@ -87,45 +79,13 @@ function buildResultsTable(breakingChanges: BreakingChange[]) {
     return table
 }
 
-function getContractSchema(expectedSchemaFile: string): GraphQLSchema {
-    const data = fs.readFileSync(expectedSchemaFile, "utf8")
+async function loadSchema(schemaFile: string): Promise<GraphQLSchema> {
+    const files = await glob(schemaFile);
+    const data = files
+        .map((filename) => fs.readFileSync(filename, "utf8"))
+        .join("\n\n");
 
-    return buildSchema(data)
-}
-
-async function getImplementedSchema(endpoint: string, headers: string[]): Promise<GraphQLSchema> {
-    const response = await fetch(endpoint, {
-        body: JSON.stringify({query: introspectionQuery}),
-        headers,
-        method: "POST",
-    })
-
-    const {data, errors} = await response.json()
-
-    if (errors) {
-        throw new Error(JSON.stringify(errors, null, 2))
-    }
-
-    return buildClientSchema(data)
-}
-
-function parseHeaderOptions(argv: minimist.ParsedArgs): string[] {
-    const defaultHeaders = {
-        "Content-Type": "application/json",
-        "User-Agent": `${name} v${version}`,
-    }
-
-    return toArray(argv.header)
-        .concat(toArray(argv.h))
-        .reduce((obj, header: string) => {
-            const [key, value] = header.split("=")
-            obj[key] = value
-            return obj
-        }, defaultHeaders)
-}
-
-function toArray(value = []): any[] {
-    return Array.isArray(value) ? value : [value]
+    return buildSchema(data);
 }
 
 main().catch((e) => {
